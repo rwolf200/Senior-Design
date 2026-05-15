@@ -11,7 +11,15 @@ import torch.nn as nn
 from torchvision import transforms, models
 from torchvision.models import efficientnet_b0, EfficientNet_B0_Weights
 
+
+# ---------------- model factory ----------------
 def create_model():
+    """
+    Create an EfficientNet-B0 classification model.
+
+    Returns:
+        torch.nn.Module: Model moved to the selected device.
+    """
     # Load EfficientNet-B0 with ImageNet weights
     model = efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
 
@@ -23,6 +31,15 @@ def create_model():
 
 
 def load_model(path):
+    """
+    Load a trained model checkpoint.
+
+    Args:
+        path (str): Path to the model checkpoint.
+
+    Returns:
+        torch.nn.Module: Loaded model in eval mode.
+    """
     model = create_model()
     state = torch.load(path, map_location=DEVICE)
 
@@ -70,7 +87,12 @@ CARD_CACHE = []
 CARD_CACHE = []
 
 def refill_cache(max_retries=5):
-    """Fetch 250 cards with images, with retry + backoff."""
+    """
+    Fetch 250 cards with images, with retry + backoff.
+
+    Args:
+        max_retries (int): Maximum number of retry attempts.
+    """
     global CARD_CACHE
 
     url = (
@@ -101,7 +123,12 @@ def refill_cache(max_retries=5):
 
 
 def get_sample():
-    """Return a random card with an image, instantly."""
+    """
+    Return a random card with an image.
+
+    Returns:
+        tuple: (image, name, label, image_url)
+    """
     global CARD_CACHE
 
     if not CARD_CACHE:
@@ -117,8 +144,10 @@ def get_sample():
     # Determine label
     if supertype == "Trainer":
         label = "trainer"
+
     elif supertype == "Energy":
         label = "energy"
+
     else:
         label_map = {
             "Grass": "grass",
@@ -131,7 +160,9 @@ def get_sample():
             "Metal": "metal",
             "Dragon": "dragon",
         }
+
         mapped = [label_map[t] for t in types if t in label_map]
+
         label = mapped[0] if mapped else "colorless"
 
     # 🔥 image fetch also gets retry protection
@@ -139,7 +170,9 @@ def get_sample():
         try:
             img_res = session.get(img_url, timeout=10)
             img = Image.open(BytesIO(img_res.content)).convert("RGB")
+
             return img, name, label, img_url
+
         except:
             time.sleep(0.2)
 
@@ -149,6 +182,16 @@ def get_sample():
 
 # ---------------- inference ----------------
 def predict(model, img):
+    """
+    Predict the class label for an image.
+
+    Args:
+        model (torch.nn.Module): Trained model.
+        img (PIL.Image.Image): Input image.
+
+    Returns:
+        str: Predicted class label.
+    """
     x = val_tf(img).unsqueeze(0).to(DEVICE)
 
     with torch.no_grad():
@@ -160,14 +203,23 @@ def predict(model, img):
 
 # ---------------- test loop ----------------
 def test(model, n=200):
+    """
+    Test the model on random Pokémon cards.
+
+    Args:
+        model (torch.nn.Module): Trained model.
+        n (int): Number of test samples.
+    """
     correct = 0
     total = 0
 
     for i in range(n):
         img, name, label, img_url = get_sample()
+
         pred = predict(model, img)
 
         total += 1
+
         match = pred == label
         correct += int(match)
 
@@ -184,6 +236,7 @@ def test(model, n=200):
 # ---------------- CLI ----------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+
     parser.add_argument("--model_path", default="pokemon_best_b0.pth")
     parser.add_argument("--n_tests", type=int, default=200)
 
