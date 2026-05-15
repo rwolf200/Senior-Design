@@ -998,4 +998,3 @@ if __name__ == "__main__":
 
     # Cleanup GPIO on exit
     GPIO.cleanup()
-#test
