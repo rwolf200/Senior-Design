@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-pokemon_train_fixed.py - Stable EfficientNet-B0 Pokémon classifier
-MTG-style pipeline with oversized/corrupt image protection.
-"""
-
 import os, argparse
 from PIL import Image
 from tqdm import tqdm
@@ -32,7 +26,7 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DEFAULT_EPOCHS = 150
 DEFAULT_BATCH = 256
 DEFAULT_LR = 6e-4
-DEFAULT_NUM_WORKERS = 10          # FIXED: prevent AMD worker deadlocks
+DEFAULT_NUM_WORKERS = 10        
 SAVE_PATH = "pokemon_best_b0.pth"
 
 torch.backends.cudnn.benchmark = True
@@ -40,7 +34,15 @@ torch.backends.cudnn.benchmark = True
 
 # ---------------- image safety checks ----------------
 def safe_open(path):
-    """Open image safely, skip corrupt or oversized images."""
+    """
+    Open image safely, skip corrupt or oversized images.
+
+    Args:
+        path (str): Path to the image file.
+
+    Returns:
+        PIL.Image.Image or None: Loaded image or None if invalid.
+    """
     try:
         img = Image.open(path)
         img.verify()  # check corruption
@@ -52,6 +54,7 @@ def safe_open(path):
             return None
 
         return img
+
     except Exception as e:
         print(f"[SKIP] Corrupt image: {path} ({e})")
         return None
@@ -59,11 +62,25 @@ def safe_open(path):
 
 # ---------------- dataset builder ----------------
 def build_dataset(root, split="train"):
+    """
+    Build a list of (image_path, class_index) entries for a given split.
+
+    The expected directory layout is:
+        root/split/<class>/*.ext
+
+    Args:
+        root (str): Dataset root directory.
+        split (str): Split name, e.g. "train" or "val".
+
+    Returns:
+        list[tuple[str, int]]: List of (path, class_index) pairs.
+    """
     entries = []
     split_root = os.path.join(root, split)
 
     for cls in CLASSES:
         folder = os.path.join(split_root, cls)
+
         if not os.path.isdir(folder):
             continue
 
@@ -77,14 +94,35 @@ def build_dataset(root, split="train"):
 
 # ---------------- dataset ----------------
 class PokemonDataset(Dataset):
+    """
+    Dataset for Pokémon card classification.
+
+    Each sample returns an image tensor and a class label index.
+    """
+
     def __init__(self, entries, transform=None): 
+        """
+        Args:
+            entries (list): List of (path, class_index) pairs.
+            transform (callable, optional): Transform to apply to each image.
+        """
         self.entries = entries
         self.transform = transform
 
     def __len__(self):
+        """Return the number of samples in the dataset."""
         return len(self.entries)
 
     def __getitem__(self, idx):
+        """
+        Load an image and its class label.
+
+        Args:
+            idx (int): Index of the sample.
+
+        Returns:
+            tuple[torch.Tensor, int]: (image, label)
+        """
         path, label = self.entries[idx]
 
         # Try to load safely
@@ -109,6 +147,12 @@ class PokemonDataset(Dataset):
 
 # ---------------- transforms (MTG-style) ----------------
 def get_transforms():
+    """
+    Create training and validation transforms.
+
+    Returns:
+        tuple: (train_transform, val_transform)
+    """
     mean = [0.485, 0.456, 0.406]
     std  = [0.229, 0.224, 0.225]
 
@@ -134,23 +178,41 @@ def get_transforms():
 
 # ---------------- model factory ----------------
 def create_model():
+    """
+    Create an EfficientNet-B0 classification model.
+
+    Returns:
+        torch.nn.Module: Model moved to the selected device.
+    """
     model = models.efficientnet_b0(
         weights=EfficientNet_B0_Weights.IMAGENET1K_V1
     )
+
     model.classifier[1] = nn.Linear(model.classifier[1].in_features, NUM_CLASSES)
+
     return model.to(DEVICE).float()
 
 
 # ---------------- train ----------------
 def train(args):
+    """
+    Train the Pokémon card classifier.
+
+    This function handles dataset creation, dataloaders, model setup,
+    training loop, validation, checkpoint saving, and LR scheduling.
+    """
     entries = build_dataset(args.data_root, "train")
+
     if not entries:
         print("No images found.")
         return
+
     train_e, val_e = train_test_split(entries, test_size=0.1, random_state=42)
+
     print(f"Train {len(train_e)} | Val {len(val_e)}")
 
     train_tf, val_tf = get_transforms()
+
     train_ds = PokemonDataset(train_e, train_tf)
     val_ds = PokemonDataset(val_e, val_tf)
 
@@ -175,52 +237,71 @@ def train(args):
     )
 
     model = create_model()
+
     criterion = nn.CrossEntropyLoss()
+
     optimizer = optim.AdamW(model.parameters(), lr=args.lr)
+
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs)
+
     scaler = torch.cuda.amp.GradScaler(enabled=args.device.startswith("cuda"))
 
     best_acc = 0.0
+
     for epoch in range(1, args.epochs + 1):
         model.train()
+
         running_loss = 0.0
 
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{args.epochs}")
+
+        # Training loop
         for x, y in pbar:
             x, y = x.to(args.device), y.to(args.device)
 
             optimizer.zero_grad()
+
             with torch.amp.autocast(device_type="cuda", enabled=args.device.startswith("cuda")):
                 logits = model(x)
                 loss = criterion(logits, y)
 
             scaler.scale(loss).backward()
+
             scaler.step(optimizer)
             scaler.update()
 
             running_loss += loss.item()
+
             pbar.set_postfix({"loss": f"{loss.item():.4f}"})
 
         avg_train_loss = running_loss / max(1, len(train_loader))
 
         # validation
         model.eval()
+
         preds_all, labels_all = [], []
+
         with torch.no_grad():
             for x, y in val_loader:
                 x, y = x.to(args.device), y.to(args.device)
+
                 with torch.amp.autocast(device_type="cuda", enabled=args.device.startswith("cuda")):
                     logits = model(x)
+
                 preds = torch.argmax(logits, dim=1).cpu().numpy()
+
                 preds_all.extend(preds)
                 labels_all.extend(y.cpu().numpy())
 
         acc = accuracy_score(labels_all, preds_all)
+
         print(f"Epoch {epoch} | TrainLoss {avg_train_loss:.4f} | ValAcc {acc:.4f}")
 
         if acc > best_acc:
             best_acc = acc
+
             torch.save(model.state_dict(), args.save_path)
+
             print("Saved best model ✔")
 
         scheduler.step()
@@ -231,6 +312,7 @@ def train(args):
 # ---------------- CLI ----------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+
     parser.add_argument("--data_root", default=DATA_ROOT)
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH)
@@ -240,4 +322,5 @@ if __name__ == "__main__":
     parser.add_argument("--save_path", default=SAVE_PATH)
 
     args = parser.parse_args()
+
     train(args)
